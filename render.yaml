@@ -1,0 +1,26 @@
+# Render Blueprint: deploy the Next.js dashboard from the monorepo root.
+# https://docs.render.com/blueprint-spec
+#
+# If rootDir is repo root: postinstall runs `npm ci` in mini-apps-dashboard and
+# `next build` when RENDER=true, so Build Command `yarn` alone is enough.
+# Local root install skips next build unless FORCE_DASHBOARD_NEXT_BUILD=1.
+services:
+  - type: web
+    name: mini-apps-dashboard
+    runtime: node
+    plan: free # change if needed
+    rootDir: mini-apps-dashboard
+    # Timed phases (logs real/user/sys) + production build
+    buildCommand: time npm ci && time npm run build
+    # Standard Next server (uses .next from build; honors Render PORT)
+    startCommand: npm run start
+    envVars:
+      - key: NODE_VERSION
+        value: "22"
+      - key: NEXT_TELEMETRY_DISABLED
+        value: "1"
+      - key: NODE_OPTIONS
+        value: "--max-old-space-size=4096"
+      # React Compiler off on Render for faster builds; set to "true" in dashboard to re-enable
+      - key: ENABLE_REACT_COMPILER
+        value: "false"

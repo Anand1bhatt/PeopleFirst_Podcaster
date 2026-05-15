@@ -1,0 +1,41 @@
+# Monorepo — both apps
+# Root shim: local yarn/npm artifacts (optional)
+/package-lock.json
+/yarn.lock
+# Old shim folder (local only)
+/src/
+
+.DS_Store
+*.pem
+
+**/node_modules/
+**/.pnp.*
+**/.yarn/*
+!**/.yarn/patches
+!**/.yarn/plugins
+!**/.yarn/releases
+
+**/.next/
+**/out/
+**/build/
+**/coverage/
+
+**/.vercel/
+
+# Secrets & local env (keep .env.example tracked)
+**/.env
+**/.env.local
+**/.env.development.local
+**/.env.test.local
+**/.env.production.local
+
+# Local briefing data (ai-news-briefing without Supabase)
+**/.briefing-dev-store/
+
+**/npm-debug.log*
+**/yarn-debug.log*
+**/yarn-error.log*
+**/.pnpm-debug.log*
+
+**/*.tsbuildinfo
+**/next-env.d.ts

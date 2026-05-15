@@ -1,0 +1,10 @@
+{
+  "name": "miniapps-monorepo",
+  "private": true,
+  "description": "Monorepo root for Render. postinstall: npm ci in mini-apps-dashboard; next build when RENDER=true. Local skip build by default. FORCE_DASHBOARD_NEXT_BUILD=1 or npm run build to build locally.",
+  "scripts": {
+    "postinstall": "node scripts/postinstall-dashboard.cjs",
+    "build": "npm run build --prefix mini-apps-dashboard",
+    "start": "npm run start --prefix mini-apps-dashboard"
+  }
+}
