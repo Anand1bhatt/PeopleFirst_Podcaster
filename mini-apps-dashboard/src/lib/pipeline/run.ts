@@ -3,6 +3,7 @@ import { summarizeArticles, SummarizeTimeoutError } from "@/lib/ai/summarize";
 import { textToSpeech } from "@/lib/tts/elevenlabs";
 import { microsoftTextToSpeechWithVoice } from "@/lib/tts/microsoft-speech";
 import { openAiTextToSpeech } from "@/lib/tts/openai-speech";
+import { sarvamTextToSpeech } from "@/lib/tts/sarvam-speech";
 import { synthesizeDialogueAudio } from "@/lib/tts/dialogue-tts";
 import { uploadAudio } from "@/lib/db/storage";
 import {
@@ -12,6 +13,7 @@ import {
 } from "@/lib/db/briefings";
 import type { TtsProvider, Source, PipelineProgress, OutputLanguage } from "@/types";
 import { azureVoiceSingleFallback } from "@/lib/tts/language-voices";
+import { elevenLabsDialogueVoiceFingerprint } from "@/lib/tts/elevenlabs-dialogue-voices";
 
 function hostnameFromSource(src: Source): string | null {
   if (src.type !== "url") return null;
@@ -88,11 +90,31 @@ async function synthesizeAudio(
     return b;
   };
 
+  const trySarvam = async (): Promise<Buffer | null> => {
+    if (!process.env.SARVAM_API_KEY?.trim()) {
+      log.push("Sarvam TTS skipped (no SARVAM_API_KEY).");
+      return null;
+    }
+    // Single-voice fallback uses kriti voice
+    const b = await sarvamTextToSpeech(script, "kriti");
+    if (!b) log.push("Sarvam TTS failed.");
+    return b;
+  };
+
   let buffer: Buffer | null = null;
-  if (preferred === "elevenlabs") {
+  if (preferred === "sarvam") {
+    buffer = await trySarvam();
+    if (!buffer) buffer = await tryOpenAi();
+    if (!buffer) buffer = await tryEleven();
+    if (!buffer) buffer = await tryMicrosoft();
+  } else if (preferred === "elevenlabs") {
     buffer = await tryEleven();
     if (!buffer) buffer = await tryMicrosoft();
     if (!buffer) buffer = await tryOpenAi();
+  } else if (preferred === "openai") {
+    buffer = await tryOpenAi();
+    if (!buffer) buffer = await trySarvam();
+    if (!buffer) buffer = await tryMicrosoft();
   } else {
     buffer = await tryMicrosoft();
     if (!buffer) buffer = await tryEleven();
@@ -127,7 +149,11 @@ export async function runPipeline(briefingId: string): Promise<void> {
         const base = progressForSourceExtract(index, total, source);
         void updateBriefingProgress(briefingId, {
           ...base,
-          message: `Still fetching ${host ?? "page"}… (${elapsedSec}s) — trying alternate readers if slow`,
+          message: /news\.google|google\.com/i.test(host ?? "")
+            ? `Skipping Google News redirect (${elapsedSec}s)…`
+            : /indiatimes|economictimes|livemint|timesofindia/i.test(host ?? "")
+              ? `Quick headline grab from ${host ?? "site"}… (${elapsedSec}s)`
+              : `Still fetching ${host ?? "page"}… (${elapsedSec}s) — trying alternate readers if slow`,
           percent: Math.min(38, base.percent + Math.min(5, Math.floor(elapsedSec / 12))),
         }).catch(() => {});
       },
@@ -157,7 +183,7 @@ export async function runPipeline(briefingId: string): Promise<void> {
     await updateBriefingProgress(briefingId, {
       percent: 44,
       step_key: "summarize",
-      message: "Writing conversational briefing (Akshay & Kriti)…",
+      message: "Akshay & Kriti are recording the podcast script…",
     });
     await updateBriefingStatus(briefingId, "summarizing");
     let summary: Awaited<ReturnType<typeof summarizeArticles>>;
@@ -201,7 +227,13 @@ export async function runPipeline(briefingId: string): Promise<void> {
       percent: 82,
       step_key: "audio",
       message: summary.dialogue_turns?.length
-        ? "Synthesizing dual-voice dialogue…"
+        ? preferred === "sarvam"
+          ? "Rendering podcast voices (Sarvam AI)…"
+          : preferred === "openai"
+          ? "Rendering podcast voices (OpenAI)…"
+          : preferred === "microsoft"
+          ? "Rendering podcast voices (Microsoft)…"
+          : "Rendering podcast voices (ElevenLabs)…"
         : "Synthesizing narration…",
     });
 
@@ -252,7 +284,10 @@ export async function runPipeline(briefingId: string): Promise<void> {
       await updateBriefingStatus(briefingId, "failed", { error_message: u.slice(0, 500) });
       return;
     }
-    await updateBriefingStatus(briefingId, "completed", { audio_url: audioUrl ?? undefined });
+    await updateBriefingStatus(briefingId, "completed", {
+      audio_url: audioUrl ?? undefined,
+      tts_voice_fingerprint: elevenLabsDialogueVoiceFingerprint(),
+    });
   } catch (err) {
     const message =
       err instanceof Error

@@ -9,7 +9,7 @@ import type {
   TtsProvider,
 } from "@/types";
 import { azureVoiceForDialogue } from "@/lib/tts/language-voices";
-import { textToSpeechWithVoiceId } from "@/lib/tts/elevenlabs";
+import { resolveDialogueVoiceIds, textToSpeechWithVoiceId } from "@/lib/tts/elevenlabs";
 import {
   microsoftTextToSpeechWithVoice,
   microsoftSynthesizeBreak,
@@ -18,6 +18,9 @@ import {
   openAiTextToSpeechWithVoice,
   type OpenAiTtsVoice,
 } from "@/lib/tts/openai-speech";
+import { sarvamTextToSpeech } from "@/lib/tts/sarvam-speech";
+import { mergeMp3Buffers } from "@/lib/tts/merge-mp3";
+import { synthesizeElevenLabsTextToDialogue } from "@/lib/tts/elevenlabs-text-to-dialogue";
 
 const OPENAI_VALID = new Set<string>([
   "alloy",
@@ -28,21 +31,20 @@ const OPENAI_VALID = new Set<string>([
   "shimmer",
 ]);
 
-function elevenVoiceIdFor(speaker: DialogueSpeaker): string {
-  if (speaker === "akshay") {
-    return (
-      process.env.ELEVENLABS_VOICE_AKSHAY?.trim() ||
-      process.env.ELEVENLABS_VOICE_ALEX?.trim() ||
-      process.env.ELEVENLABS_VOICE_ID?.trim() ||
-      ""
-    );
+/** Optional light cleanup; ELEVENLABS_RAW_TEXT=1 sends script verbatim (playground parity). */
+function prepConversationalLine(text: string): string {
+  const normalized = text.replace(/\s+/g, " ").trim();
+  if (process.env.ELEVENLABS_RAW_TEXT === "1") {
+    return normalized;
   }
-  return (
-    process.env.ELEVENLABS_VOICE_KRITI?.trim() ||
-    process.env.ELEVENLABS_VOICE_JAMIE?.trim() ||
-    process.env.ELEVENLABS_VOICE_ID?.trim() ||
-    ""
-  );
+  return normalized
+    .replace(/\s*—\s*/g, ", ")
+    .replace(/\s+-\s+/g, ", ");
+}
+
+async function elevenVoiceIdFor(speaker: DialogueSpeaker): Promise<string> {
+  const ids = await resolveDialogueVoiceIds();
+  return speaker === "akshay" ? ids.akshay : ids.kriti;
 }
 
 function openAiVoiceFor(speaker: DialogueSpeaker): OpenAiTtsVoice {
@@ -59,7 +61,7 @@ function openAiVoiceFor(speaker: DialogueSpeaker): OpenAiTtsVoice {
 function createTurnSynthesizers(outputLanguage: OutputLanguage) {
   async function tryElevenLabs(text: string, speaker: DialogueSpeaker): Promise<Buffer | null> {
     if (!process.env.ELEVENLABS_API_KEY?.trim()) return null;
-    const vid = elevenVoiceIdFor(speaker);
+    const vid = await elevenVoiceIdFor(speaker);
     if (!vid) return null;
     const r = await textToSpeechWithVoiceId(text, vid);
     return r.buffer;
@@ -80,7 +82,12 @@ function createTurnSynthesizers(outputLanguage: OutputLanguage) {
     return openAiTextToSpeechWithVoice(text, openAiVoiceFor(speaker), 1.0);
   }
 
-  return { tryElevenLabs, tryMicrosoft, tryOpenAi };
+  async function trySarvam(text: string, speaker: DialogueSpeaker): Promise<Buffer | null> {
+    if (!process.env.SARVAM_API_KEY?.trim()) return null;
+    return sarvamTextToSpeech(text, speaker);
+  }
+
+  return { tryElevenLabs, tryMicrosoft, tryOpenAi, trySarvam };
 }
 
 async function synthesizeTurn(
@@ -89,13 +96,17 @@ async function synthesizeTurn(
   preferred: TtsProvider,
   outputLanguage: OutputLanguage
 ): Promise<Buffer | null> {
-  const trimmed = text.trim();
+  const trimmed = prepConversationalLine(text);
   if (!trimmed) return null;
 
-  const { tryElevenLabs, tryMicrosoft, tryOpenAi } = createTurnSynthesizers(outputLanguage);
+  const { tryElevenLabs, tryMicrosoft, tryOpenAi, trySarvam } = createTurnSynthesizers(outputLanguage);
   const order =
-    preferred === "elevenlabs"
+    preferred === "sarvam"
+      ? [trySarvam, tryElevenLabs, tryMicrosoft, tryOpenAi]
+      : preferred === "elevenlabs"
       ? [tryElevenLabs, tryMicrosoft, tryOpenAi]
+      : preferred === "openai"
+      ? [tryOpenAi, trySarvam, tryMicrosoft, tryElevenLabs]
       : [tryMicrosoft, tryElevenLabs, tryOpenAi];
 
   for (const fn of order) {
@@ -137,6 +148,19 @@ export async function synthesizeDialogueAudio(
     return { buffer: null, log: ["No dialogue turns."] };
   }
 
+  if (preferred === "elevenlabs" && process.env.ELEVENLABS_API_KEY?.trim()) {
+    const dialogue = await synthesizeElevenLabsTextToDialogue(turns);
+    log.push(...dialogue.log);
+    if (dialogue.buffer) {
+      return { buffer: dialogue.buffer, log };
+    }
+    log.push("Falling back to per-turn ElevenLabs TTS.");
+  }
+
+  if (preferred === "sarvam" && !process.env.SARVAM_API_KEY?.trim()) {
+    log.push("Sarvam TTS skipped (no SARVAM_API_KEY). Falling back to OpenAI.");
+  }
+
   const dialogueConcurrency = Math.min(
     6,
     Math.max(1, Number(process.env.DIALOGUE_TTS_CONCURRENCY ?? "4") || 4)
@@ -168,7 +192,7 @@ export async function synthesizeDialogueAudio(
     parts.push(buf);
   }
 
-  const merged = Buffer.concat(parts);
+  const merged = mergeMp3Buffers(parts);
   if (merged.byteLength < 128) {
     log.push("Merged dialogue audio too small.");
     return { buffer: null, log };

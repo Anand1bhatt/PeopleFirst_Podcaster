@@ -42,7 +42,10 @@ export async function POST(request: NextRequest) {
   }
 
   const ttsProvider: TtsProvider =
-    body.ttsProvider === "microsoft" ? "microsoft" : "elevenlabs";
+    body.ttsProvider === "microsoft" ? "microsoft"
+    : body.ttsProvider === "sarvam" ? "sarvam"
+    : body.ttsProvider === "openai" ? "openai"
+    : "elevenlabs";
   const outputLanguage = parseOutputLanguage(body.outputLanguage);
 
   const briefingId = await createBriefing(normalized, ttsProvider, outputLanguage);

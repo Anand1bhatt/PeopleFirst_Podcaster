@@ -1,10 +1,23 @@
 import OpenAI from "openai";
 import type { DialogueTurn, OutputLanguage, SummaryOutput } from "@/types";
 import type { ExtractedArticle } from "@/lib/scraper/extract";
+
+/** Fixed host introduction prepended to every English briefing. */
+const INTRO_TURNS: DialogueTurn[] = [
+  {
+    speaker: "kriti",
+    text: "Hey Reliance family, welcome back to the AI News Briefing podcast — your quick catch-up on everything happening today. I'm Kriti.",
+  },
+  {
+    speaker: "akshay",
+    text: "And I'm Akshay.",
+  },
+];
 import {
   normalizeDialogueSpeaker,
   dialogueSpeakerLabel,
 } from "@/lib/dialogue-speakers";
+import { coalesceSplitWelcomeTurn } from "@/lib/ai/coalesce-welcome-turn";
 
 const openai = process.env.OPENAI_API_KEY
   ? new OpenAI({
@@ -122,6 +135,7 @@ function baseStructure(b: DialogueBudget): string {
 
 Rules:
 - **dialogue_turns**: alternate akshay/kriti. **Minimum ${b.minTurns} turns, maximum ${b.maxTurns} turns.**
+- **Keep each turn short** (roughly 8–35 spoken words). Prefer many quick exchanges over long monologues.
 - speaker must be exactly lowercase "akshay" or "kriti" (not display names or other labels).
 - Inside JSON strings, avoid raw double-quotes or use \\" — broken JSON will fail parsing.
 - No stage directions, no asterisks, no sound effects.`;
@@ -140,7 +154,8 @@ function baseStructureSectioned(b: DialogueBudget): string {
 
 Rules:
 - **dialogue_turns**: alternate akshay/kriti. **Minimum ${b.minTurns} turns, maximum ${b.maxTurns} turns.**
-- **section_break** (optional boolean): set **true** only on the **first** turn that begins each NEW SECTION after the first section (user message labels each source with SECTION: …). That turn should start with a clear verbal handoff, e.g. "Alright—shifting to business in India now." Vary phrasing per boundary. Do not set section_break on turn 1.
+- **Keep each turn short** (roughly 8–35 spoken words). Prefer many quick exchanges over long monologues.
+- **section_break** (optional boolean): set **true** only on the **first** turn that begins each NEW SECTION after the first section (user message labels each source with SECTION: …). That turn should sound like a **podcast chapter pivot**—e.g. "Okay wait—tech twitter is spiraling about this next one." Vary phrasing. Do not set section_break on turn 1.
 - speaker must be exactly lowercase "akshay" or "kriti".
 - Inside JSON strings, avoid raw double-quotes or use \\".
 - No stage directions, no asterisks.`;
@@ -148,7 +163,27 @@ Rules:
 
 function sectionBridgeRulesEn(): string {
   return `
-MULTI-SECTION BRIEFING: Sources are tagged **SECTION: &lt;name&gt;** in the user message (e.g. Trending world, Reliance Jio, Sports). Cover every source. When you move from one SECTION to another, the opening line for that new section must sound like a natural podcast handoff so listeners notice the topic change—then continue the conversational flow.`;
+MULTI-SECTION EPISODE: Sources are tagged **SECTION: &lt;name&gt;** (e.g. Trending world, Reliance Jio, Sports). Cover every source. When you pivot sections, the first line must feel like **two friends changing the subject on a podcast**—curious, casual, not a news desk transition.`;
+}
+
+/** Strip anchor-style clichés from model output (post-parse). */
+const NEWS_ANCHOR_PHRASES: RegExp[] = [
+  /\bIn today'?s news\b/gi,
+  /\bBreaking news\b/gi,
+  /\bThis is AI News\b/gi,
+  /\bLet'?s dive into the headlines\b/gi,
+  /\bStay tuned\b/gi,
+  /\bComing up next\b/gi,
+  /\bGood (evening|morning|afternoon), (viewers|listeners)\b/gi,
+  /\bFrom the news desk\b/gi,
+];
+
+function deAnchorDialogueText(text: string): string {
+  let s = text.trim();
+  for (const re of NEWS_ANCHOR_PHRASES) {
+    s = s.replace(re, "").replace(/\s{2,}/g, " ").trim();
+  }
+  return s;
 }
 
 function sectionBridgeRulesHi(): string {
@@ -170,21 +205,29 @@ function buildSummarizePrompt(
   const secHi = sectioned ? sectionBridgeRulesHi() : "";
 
   if (lang === "en") {
-    return `You write engaging podcast dialogue for two co-hosts covering **multiple news stories**.
+    return `You write dialogue for **AI News Podcast** — a **Spotify-style, modern conversational show** (NOT television news, NOT a robotic anchor read).
+
+**Vibe:** Two intelligent Indian English-speaking podcast creators reacting to trending stories—emotionally engaging, witty, addictive, like friends who actually read the internet.
 
 Hosts:
-- **Akshay** (male-presenting voice): curious, asks questions, reacts warmly.
-- **Kriti** (female-presenting voice): insightful, explains context, keeps energy up.
+- **Akshay** (akshay): curious, reactive, asks "wait what?", playful skepticism, quick jokes grounded in facts.
+- **Kriti** (kriti): sharp, explains context, hype or push back, keeps momentum—**never** sounds like a formal newsreader.
 
-Opening (mandatory): The **first** spoken line must welcome the **Reliance family** to **AI News Podcast**—same meaning as *"Hey Reliance family, welcome to AI News Podcast"* (you may paraphrase slightly so it sounds natural day to day). If using **dialogue_turns**, the **first turn must be speaker kriti** and must contain this welcome before any news content.
+**Delivery rules (mandatory):**
+- **Short turns only** (about 8–35 words). Rapid back-and-forth. Alternate speakers often.
+- **Conversational chemistry:** overlap energy ("Yeah yeah—", "Hold on—", "Wait—seriously?"), surprise, curiosity, light banter.
+- **Use reaction lines** when facts land: e.g. "That's actually wild.", "Okay this part is important.", "I honestly didn't expect that.", "This changes everything."
+- **NO** anchor clichés: never say "In today's news", "Breaking", "Good evening viewers", bulletin intros, or stiff journalism tone.
+- **NO** long monologues, lecture mode, or both hosts agreeing without adding a **new fact**.
+- Sound like **podcast creators**, not reporters reading a teleprompter.
 
-**Factual density (critical):** After the welcome, **every** few lines must introduce **new, concrete information** from the article excerpts below—**companies, people, numbers, dates, places, or reported events**. Do **not** pad with vague English filler ("lots going on", "interesting times", "big story" without saying **what** happened), long mutual agreement, or hosts echoing each other without adding facts. If you catch yourself being generic, **insert the next specific fact** from the sources. **summary_points** bullets must each contain **at least one checkable fact** from the text (not opinion).
+Opening: The host introduction is already handled separately — **do NOT start with a welcome, greeting, or "I'm Kriti / I'm Akshay" line**. Jump straight into the news content from the very first turn.
 
-Tone: **Simple, friendly, conversational**—plain language, not preachy or agenda-driven. Sound like friends sharing **actual headlines and details**, not lecturing.
+**Facts (still critical):** Ground every beat in the excerpts—**names, numbers, dates, places, what happened**. After reactions, land the **specific detail** from sources. **summary_points** = one checkable fact each minimum.
 
-Neutrality: Stick to what the **sources report**. **No political bias, slant, or agenda**; do not tell listeners what to think, how to vote, or which side is "right." **Never invent** quotes, stats, or events not supported by the excerpts; if a source body contains **EXTRACTION FAILED** or headline-level-only markers, say on-air that you only have the link/topic and stay cautious—do not fabricate detail.
+Neutrality: Report what sources say; no political preaching or invented quotes/stats. If **EXTRACTION FAILED**, say you only have the headline/link—don't fabricate.
 
-Closing (mandatory): End with a **brief, warm sign-off aimed at the Reliance family**—thanks for listening, wishing them well, stay informed—so it clearly feels like a Reliance-family send-off. Either host may deliver it. **Do not** say "see you tomorrow," "until tomorrow," "same time tomorrow," or any fixed "next episode" / scheduled goodbye.
+Closing (mandatory): Brief warm sign-off to **Reliance family** (either host). **No** "see you tomorrow" / fixed next-episode scheduling.
 ${secEn}
 
 ${struct}
@@ -262,7 +305,7 @@ function buildUserMessage(
     })
     .join("\n\n---\n\n");
 
-  const headEn = `Write the two-host briefing. There are **exactly ${n} sources** below—each must appear in the dialogue. Target **${b.wordMin}–${b.wordMax}** words in dialogue_turns.\n\n${indexLines}\n\n---\n\n`;
+  const headEn = `Write a **podcast episode script** (two hosts, conversational—not news narration). There are **exactly ${n} sources** below—each must get airtime. Target **${b.wordMin}–${b.wordMax}** words total in dialogue_turns, mostly in **short turns**.\n\n${indexLines}\n\n---\n\n`;
   const headHi = `संवाद लिखें। **सभी ${n} स्रोत** कवर करें। लक्ष्य: **${b.wordMin}–${b.wordMax}** शब्द।\n\n${indexLines}\n\n---\n\n`;
   const headMr = `संवाद तयार करा. **सर्व ${n} स्रोत**. **${b.wordMin}–${b.wordMax}** शब्द.\n\n${indexLines}\n\n---\n\n`;
   const headPa = `ਸੰਵਾਦ ਲਿਖੋ। **ਸਾਰੇ ${n} ਸਰੋਤ**। **${b.wordMin}–${b.wordMax}** ਸ਼ਬਦ।\n\n${indexLines}\n\n---\n\n`;
@@ -288,7 +331,7 @@ function buildUserMessage(
       : "";
   const factual =
     lang === "en"
-      ? `\n\n---\n\nANCHOR: Ground the podcast in the excerpts above. Prioritize **who did what, when, where, and any numbers** from the text. Minimize meta banter; maximize **new facts per turn** after the intro.`
+      ? `\n\n---\n\nPODCAST FACT CHECK: Stay addictive and casual, but every few lines must add a **concrete fact** from the excerpts (who/what/when/where/numbers). Reactions first, then the detail—never hollow hype without substance.`
       : "";
   return head + combined + tail + factual;
 }
@@ -319,7 +362,11 @@ export class SummarizeTimeoutError extends Error {
 }
 
 
-function normalizeTurns(raw: unknown, minTurns: number): DialogueTurn[] | null {
+function normalizeTurns(
+  raw: unknown,
+  minTurns: number,
+  outputLanguage: OutputLanguage = "en"
+): DialogueTurn[] | null {
   if (!Array.isArray(raw) || raw.length < minTurns) return null;
   const out: DialogueTurn[] = [];
   for (const row of raw) {
@@ -327,13 +374,17 @@ function normalizeTurns(raw: unknown, minTurns: number): DialogueTurn[] | null {
     const mapped = normalizeDialogueSpeaker((row as { speaker?: string }).speaker);
     const t = String((row as { text?: string }).text ?? "").trim();
     if (!mapped) return null;
-    if (t.length < 2) return null;
+    const cleaned = outputLanguage === "en" ? deAnchorDialogueText(t) : t;
+    if (cleaned.length < 2) return null;
     const section_break = Boolean((row as { section_break?: boolean }).section_break);
     out.push(
-      section_break ? { speaker: mapped, text: t, section_break: true } : { speaker: mapped, text: t }
+      section_break
+        ? { speaker: mapped, text: cleaned, section_break: true }
+        : { speaker: mapped, text: cleaned }
     );
   }
-  return out.length >= minTurns ? out : null;
+  if (out.length < minTurns) return null;
+  return outputLanguage === "en" ? coalesceSplitWelcomeTurn(out) : out;
 }
 
 /** Strip ```json fences; trim. */
@@ -395,7 +446,7 @@ export async function summarizeArticles(
     const parsed = parseModelJsonContent(raw);
     if (!parsed?.headline || !Array.isArray(parsed.summary_points)) return null;
 
-    let normalized = normalizeTurns(parsed.dialogue_turns, budget.minTurns);
+    let normalized = normalizeTurns(parsed.dialogue_turns, budget.minTurns, outputLanguage);
     if (
       !normalized &&
       budget.n >= 2 &&
@@ -403,14 +454,16 @@ export async function summarizeArticles(
       parsed.dialogue_turns.length >= 6
     ) {
       const relaxed = Math.max(6, Math.min(budget.minTurns - 2, Math.ceil(budget.minTurns * 0.7)));
-      normalized = normalizeTurns(parsed.dialogue_turns, relaxed);
+      normalized = normalizeTurns(parsed.dialogue_turns, relaxed, outputLanguage);
     }
     let audio_script: string;
     let dialogue_turns: DialogueTurn[] | undefined;
 
     if (normalized) {
-      audio_script = optimizeForSpeech(turnsToAudioScript(normalized), outputLanguage);
-      dialogue_turns = normalized;
+      // Prepend fixed host intro for English briefings
+      const withIntro = outputLanguage === "en" ? [...INTRO_TURNS, ...normalized] : normalized;
+      audio_script = optimizeForSpeech(turnsToAudioScript(withIntro), outputLanguage);
+      dialogue_turns = withIntro;
     } else if (typeof parsed.audio_script === "string" && parsed.audio_script.trim()) {
       audio_script = optimizeForSpeech(parsed.audio_script, outputLanguage);
     } else {

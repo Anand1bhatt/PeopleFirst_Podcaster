@@ -46,7 +46,7 @@ export type PipelineProgress = {
 };
 
 /** User-chosen voice engine; pipeline falls back in order (e.g. ElevenLabs → Microsoft → OpenAI). */
-export type TtsProvider = "elevenlabs" | "microsoft";
+export type TtsProvider = "elevenlabs" | "microsoft" | "sarvam" | "openai";
 
 /** Briefing audio + transcript language. Haryanvi uses hi-IN TTS + dialectal dialogue. */
 export type OutputLanguage = "en" | "hi" | "mr" | "pa" | "bn" | "hi-haryanvi";

@@ -17,6 +17,7 @@ import type {
 } from "@/types";
 import { parseOutputLanguage } from "@/types";
 import { normalizeDialogueSpeaker } from "@/lib/dialogue-speakers";
+import { briefingVoiceFingerprintMatches } from "@/lib/tts/elevenlabs-dialogue-voices";
 
 type MemoryBriefing = DevBriefingEntry;
 
@@ -26,6 +27,19 @@ const FIGMA_DIGEST_IN_PROGRESS: BriefingStatus[] = [
   "summarizing",
   "generating_audio",
 ];
+
+/** Jobs with no progress longer than this are treated as dead (dev server restarts, hung OpenAI, etc.). */
+const FIGMA_DIGEST_STALE_MS = Math.min(
+  Math.max(Number(process.env.FIGMA_DIGEST_STALE_MS ?? "480000") || 480_000, 120_000),
+  1_800_000
+);
+
+function isStaleInProgressBriefing(row: BriefingRow): boolean {
+  if (!FIGMA_DIGEST_IN_PROGRESS.includes(row.status as BriefingStatus)) return false;
+  const updated = new Date(row.updated_at).getTime();
+  if (!Number.isFinite(updated)) return true;
+  return Date.now() - updated > FIGMA_DIGEST_STALE_MS;
+}
 
 export type CreateBriefingOptions = {
   /** YYYY-MM-DD when this job is the figma feed conversation for that calendar day. */
@@ -110,7 +124,10 @@ function rowToBriefing(row: BriefingRow, sourceRows: BriefingSourceRow[]): Brief
     }));
   const tp = row.tts_provider;
   const tts_provider: TtsProvider =
-    tp === "microsoft" ? "microsoft" : "elevenlabs";
+    tp === "microsoft" ? "microsoft"
+    : tp === "sarvam" ? "sarvam"
+    : tp === "openai" ? "openai"
+    : "elevenlabs";
   return {
     id: row.id,
     status: row.status as BriefingStatus,
@@ -142,7 +159,11 @@ function rowMatchesFigmaDigest(
 ): boolean {
   const ymd = row.figma_digest_date?.trim().slice(0, 10);
   if (!ymd || ymd !== digestDate) return false;
-  const tp: TtsProvider = row.tts_provider === "microsoft" ? "microsoft" : "elevenlabs";
+  const tp: TtsProvider =
+    row.tts_provider === "microsoft" ? "microsoft"
+    : row.tts_provider === "sarvam" ? "sarvam"
+    : row.tts_provider === "openai" ? "openai"
+    : "elevenlabs";
   if (tp !== ttsProvider) return false;
   return parseOutputLanguage(row.output_language) === outputLanguage;
 }
@@ -180,14 +201,20 @@ export async function findFigmaDigestBriefingForReuse(
     if (cErr) {
       console.error("[briefings] findFigmaDigest completed:", cErr.message);
     } else {
-      const row = completed?.[0];
+      const row = completed?.[0] as BriefingRow | undefined;
       const url = row && typeof row.audio_url === "string" ? row.audio_url.trim() : "";
-      if (row?.id && url) return { kind: "completed", id: row.id, audio_url: url };
+      if (
+        row?.id &&
+        url &&
+        briefingVoiceFingerprintMatches(row.tts_voice_fingerprint)
+      ) {
+        return { kind: "completed", id: row.id, audio_url: url };
+      }
     }
 
     const { data: inflight, error: iErr } = await supabase
       .from("briefings")
-      .select("id")
+      .select("id, status, updated_at")
       .eq("figma_digest_date", date)
       .eq("tts_provider", ttsProvider)
       .eq("output_language", outputLanguage)
@@ -198,8 +225,16 @@ export async function findFigmaDigestBriefingForReuse(
       console.error("[briefings] findFigmaDigest in_progress:", iErr.message);
       return null;
     }
-    const ir = inflight?.[0];
-    if (ir?.id) return { kind: "in_progress", id: ir.id };
+    const ir = inflight?.[0] as BriefingRow | undefined;
+    if (ir?.id) {
+      if (isStaleInProgressBriefing(ir)) {
+        await updateBriefingStatus(ir.id, "failed", {
+          error_message: "Generation timed out. Tap play to try again.",
+        });
+      } else {
+        return { kind: "in_progress", id: ir.id };
+      }
+    }
     return null;
   }
 
@@ -212,11 +247,19 @@ export async function findFigmaDigestBriefingForReuse(
   for (const r of matching) {
     if (r.status === "completed") {
       const url = r.audio_url?.trim() ?? "";
-      if (url) return { kind: "completed", id: r.id, audio_url: url };
+      if (url && briefingVoiceFingerprintMatches(r.tts_voice_fingerprint)) {
+        return { kind: "completed", id: r.id, audio_url: url };
+      }
     }
   }
   for (const r of matching) {
     if (FIGMA_DIGEST_IN_PROGRESS.includes(r.status as BriefingStatus)) {
+      if (isStaleInProgressBriefing(r)) {
+        await updateBriefingStatus(r.id, "failed", {
+          error_message: "Generation timed out. Tap play to try again.",
+        });
+        continue;
+      }
       return { kind: "in_progress", id: r.id };
     }
   }
@@ -301,6 +344,7 @@ export async function updateBriefingStatus(
     dialogue_turns?: DialogueTurn[] | null;
     audio_url?: string;
     error_message?: string;
+    tts_voice_fingerprint?: string;
   }
 ): Promise<boolean> {
   if (supabase) {
@@ -312,6 +356,9 @@ export async function updateBriefingStatus(
       payload.dialogue_turns = updates.dialogue_turns;
     if (updates?.audio_url != null) payload.audio_url = updates.audio_url;
     if (updates?.error_message != null) payload.error_message = updates.error_message;
+    if (updates?.tts_voice_fingerprint != null) {
+      payload.tts_voice_fingerprint = updates.tts_voice_fingerprint;
+    }
     if (status === "completed" || status === "failed") payload.pipeline_progress = null;
     const { error } = await supabase.from("briefings").update(payload).eq("id", id);
     return !error;
@@ -335,6 +382,9 @@ export async function updateBriefingStatus(
     entry.row.dialogue_turns = updates.dialogue_turns as unknown[] | null;
   if (updates?.audio_url != null) entry.row.audio_url = updates.audio_url;
   if (updates?.error_message != null) entry.row.error_message = updates.error_message;
+  if (updates?.tts_voice_fingerprint != null) {
+    entry.row.tts_voice_fingerprint = updates.tts_voice_fingerprint;
+  }
   if (status === "completed" || status === "failed") entry.row.pipeline_progress = null;
   await devBriefingWrite(entry).catch((e) =>
     console.error("[briefings] dev disk write failed", e)
