@@ -207,22 +207,45 @@ export async function runPipeline(briefingId: string): Promise<void> {
       return;
     }
 
-    await updateBriefingProgress(briefingId, {
-      percent: 72,
-      step_key: "audio",
-      message: "Generating natural voice audio…",
-    });
-    await updateBriefingStatus(briefingId, "generating_audio", {
+    // Pause for script validation before TTS
+    await updateBriefingStatus(briefingId, "awaiting_approval", {
       summary_headline: summary.headline,
       summary_points: summary.summary_points,
       audio_script: summary.audio_script,
       dialogue_turns: summary.dialogue_turns ?? null,
     });
+    await updateBriefingProgress(briefingId, {
+      percent: 72,
+      step_key: "audio",
+      message: "Script ready — awaiting approval before voice generation…",
+    });
+    // Pipeline pauses here. Resume via POST /api/briefings/{id}/approve
+    return;
+  } catch (err) {
+    const message =
+      err instanceof Error
+        ? `${err.message}${err.stack ? ` | ${err.stack.split("\n").slice(0, 2).join(" ")}` : ""}`
+        : "Pipeline failed";
+    await updateBriefingStatus(briefingId, "failed", {
+      error_message: message.slice(0, 500),
+    });
+  }
+}
 
-    const preferred: TtsProvider = briefing.tts_provider ?? "elevenlabs";
-    let audioBuffer: Buffer | null = null;
-    const ttsLog: string[] = [];
+/** Resume pipeline from audio generation (called after script approval). */
+export async function runPipelineFromAudio(briefingId: string): Promise<void> {
+  const briefing = await getBriefing(briefingId);
+  if (!briefing?.summary) {
+    await updateBriefingStatus(briefingId, "failed", { error_message: "No summary found to generate audio from." });
+    return;
+  }
 
+  const summary = briefing.summary;
+  const preferred: TtsProvider = briefing.tts_provider ?? "elevenlabs";
+  let audioBuffer: Buffer | null = null;
+  const ttsLog: string[] = [];
+
+  try {
     await updateBriefingProgress(briefingId, {
       percent: 82,
       step_key: "audio",
@@ -260,12 +283,13 @@ export async function runPipeline(briefingId: string): Promise<void> {
       audioBuffer = single.buffer;
       ttsLog.push(...single.log);
     }
+
     if (!audioBuffer) {
       const detail = ttsLog.join(" ");
       const msg =
         detail.length > 80
           ? `All TTS providers failed. ${detail.slice(0, 400)}${detail.length > 400 ? "…" : ""}`
-          : "Audio generation failed. Configure ElevenLabs and/or Azure Speech (AZURE_SPEECH_KEY + AZURE_SPEECH_REGION), or ensure OPENAI_API_KEY works for TTS fallback.";
+          : "Audio generation failed. Configure ElevenLabs and/or Azure Speech, or ensure OPENAI_API_KEY works for TTS fallback.";
       await updateBriefingStatus(briefingId, "failed", { error_message: msg });
       return;
     }
@@ -275,15 +299,16 @@ export async function runPipeline(briefingId: string): Promise<void> {
       step_key: "audio",
       message: "Uploading audio — almost ready…",
     });
+
     let audioUrl: string | null;
     try {
       audioUrl = await uploadAudio(briefingId, audioBuffer);
     } catch (uploadErr) {
-      const u =
-        uploadErr instanceof Error ? uploadErr.message : "Audio upload failed (check Supabase storage).";
+      const u = uploadErr instanceof Error ? uploadErr.message : "Audio upload failed.";
       await updateBriefingStatus(briefingId, "failed", { error_message: u.slice(0, 500) });
       return;
     }
+
     await updateBriefingStatus(briefingId, "completed", {
       audio_url: audioUrl ?? undefined,
       tts_voice_fingerprint: elevenLabsDialogueVoiceFingerprint(),
@@ -292,7 +317,7 @@ export async function runPipeline(briefingId: string): Promise<void> {
     const message =
       err instanceof Error
         ? `${err.message}${err.stack ? ` | ${err.stack.split("\n").slice(0, 2).join(" ")}` : ""}`
-        : "Pipeline failed";
+        : "Pipeline audio failed";
     await updateBriefingStatus(briefingId, "failed", {
       error_message: message.slice(0, 500),
     });

@@ -16,12 +16,13 @@ import * as path from "path";
 const execFileAsync = promisify(execFile);
 
 const SARVAM_API_BASE = "https://api.sarvam.ai";
-const SARVAM_MODEL = "bulbul:v2";
+const SARVAM_API_IP_FALLBACK = "https://20.235.220.20"; // Direct IP fallback for DNS issues
+const SARVAM_MODEL = "bulbul:v3"; // Latest version - using natural-sounding voices
 
 /** Default voice mapping — override via env vars */
 const DEFAULT_VOICES: Record<DialogueSpeaker, string> = {
-  kriti: "anushka",   // Female Indian English
-  akshay: "abhilash", // Male Indian English
+  kriti: "simran",     // Female Indian English (perfect natural voice)
+  akshay: "shubh",     // Male Indian English (natural conversational voice)
 };
 
 function sarvamApiKey(): string {
@@ -60,25 +61,42 @@ async function wavToMp3(wavBuffer: Buffer): Promise<Buffer | null> {
   }
 }
 
-/**
- * Synthesize a single text line using Sarvam Bulbul v2.
- * Returns an MP3 Buffer (converted from WAV) or null on failure.
- */
-export async function sarvamTextToSpeech(
+const SARVAM_CHAR_LIMIT = 450; // Sarvam API limit is 500 chars; use 450 for safety
+
+/** Split text into chunks of max SARVAM_CHAR_LIMIT chars, splitting on sentence boundaries. */
+function chunkText(text: string): string[] {
+  const trimmed = text.trim();
+  if (trimmed.length <= SARVAM_CHAR_LIMIT) return [trimmed];
+
+  const chunks: string[] = [];
+  // Split on sentence-ending punctuation
+  const sentences = trimmed.split(/(?<=[.!?])\s+/);
+  let current = "";
+  for (const sentence of sentences) {
+    if ((current + " " + sentence).trim().length > SARVAM_CHAR_LIMIT) {
+      if (current.trim()) chunks.push(current.trim());
+      current = sentence;
+    } else {
+      current = current ? current + " " + sentence : sentence;
+    }
+  }
+  if (current.trim()) chunks.push(current.trim());
+  return chunks.length > 0 ? chunks : [trimmed.slice(0, SARVAM_CHAR_LIMIT)];
+}
+
+/** Call Sarvam API for a single chunk of text. */
+async function sarvamApiCall(
   text: string,
-  speaker: DialogueSpeaker
+  voice: string,
+  apiKey: string
 ): Promise<Buffer | null> {
-  const apiKey = sarvamApiKey();
-  if (!apiKey) return null;
-
-  const voice = sarvamVoiceFor(speaker);
-
-  try {
-    const res = await fetch(`${SARVAM_API_BASE}/text-to-speech`, {
+  async function doFetch(baseUrl: string, extraHeaders: Record<string, string> = {}) {
+    return fetch(`${baseUrl}/text-to-speech`, {
       method: "POST",
       headers: {
         "api-subscription-key": apiKey,
         "Content-Type": "application/json",
+        ...extraHeaders,
       },
       body: JSON.stringify({
         inputs: [text.trim()],
@@ -88,26 +106,67 @@ export async function sarvamTextToSpeech(
         enable_preprocessing: true,
       }),
     });
+  }
 
-    if (!res.ok) {
-      const msg = await res.text().catch(() => res.statusText);
-      console.error(`[Sarvam TTS] ${res.status} — ${msg}`);
-      return null;
+  let res: Response;
+  try {
+    res = await doFetch(SARVAM_API_BASE);
+  } catch (dnsError: any) {
+    if (dnsError?.code === "ENOTFOUND" || dnsError?.cause?.code === "ENOTFOUND") {
+      console.warn("[Sarvam TTS] DNS failed, trying IP fallback…");
+      res = await doFetch(SARVAM_API_IP_FALLBACK, { Host: "api.sarvam.ai" });
+    } else {
+      throw dnsError;
+    }
+  }
+
+  if (!res.ok) {
+    const msg = await res.text().catch(() => res.statusText);
+    console.error(`[Sarvam TTS] ${res.status} — ${msg}`);
+    return null;
+  }
+
+  const data = (await res.json()) as { audios?: string[] };
+  const b64 = data?.audios?.[0];
+  if (!b64) return null;
+
+  const wavBuffer = Buffer.from(b64, "base64");
+  return wavToMp3(wavBuffer);
+}
+
+/**
+ * Synthesize text using Sarvam Bulbul v3.
+ * Automatically chunks texts > 450 chars and concatenates the MP3 buffers.
+ * Returns an MP3 Buffer or null on failure.
+ */
+export async function sarvamTextToSpeech(
+  text: string,
+  speaker: DialogueSpeaker
+): Promise<Buffer | null> {
+  const apiKey = sarvamApiKey();
+  if (!apiKey) return null;
+
+  const voice = sarvamVoiceFor(speaker);
+  const chunks = chunkText(text);
+
+  try {
+    const buffers: Buffer[] = [];
+    for (const chunk of chunks) {
+      const mp3 = await sarvamApiCall(chunk, voice, apiKey);
+      if (!mp3) {
+        console.error(`[Sarvam TTS] Chunk failed: "${chunk.slice(0, 60)}…"`);
+        return null;
+      }
+      buffers.push(mp3);
     }
 
-    const data = (await res.json()) as { audios?: string[] };
-    const b64 = data?.audios?.[0];
-    if (!b64) return null;
+    if (buffers.length === 1) return buffers[0];
 
-    const wavBuffer = Buffer.from(b64, "base64");
-    const mp3Buffer = await wavToMp3(wavBuffer);
-    if (!mp3Buffer) {
-      console.error("[Sarvam TTS] WAV→MP3 conversion returned null");
-      return null;
-    }
-    return mp3Buffer;
+    // Concatenate multiple chunk MP3s using mergeMp3Buffers
+    const { mergeMp3Buffers } = await import("@/lib/tts/merge-mp3");
+    return mergeMp3Buffers(buffers);
   } catch (err) {
-    console.error("[Sarvam TTS] fetch error:", err);
+    console.error("[Sarvam TTS] error:", err);
     return null;
   }
 }

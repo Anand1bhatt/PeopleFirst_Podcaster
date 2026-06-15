@@ -1,12 +1,12 @@
 import OpenAI from "openai";
-import type { DialogueTurn, OutputLanguage, SummaryOutput } from "@/types";
+import type { DialogueTurn, DialogueSpeaker, OutputLanguage, SummaryOutput } from "@/types";
 import type { ExtractedArticle } from "@/lib/scraper/extract";
 
 /** Fixed host introduction prepended to every English briefing. */
 const INTRO_TURNS: DialogueTurn[] = [
   {
     speaker: "kriti",
-    text: "Hey Reliance family, welcome back to the AI News Briefing podcast — your quick catch-up on everything happening today. I'm Kriti.",
+    text: "Hey Reliance family, welcome back to the AI News Briefing Podcast — your quick catch-up on everything happening today. I'm Kriti.",
   },
   {
     speaker: "akshay",
@@ -205,29 +205,180 @@ function buildSummarizePrompt(
   const secHi = sectioned ? sectionBridgeRulesHi() : "";
 
   if (lang === "en") {
-    return `You write dialogue for **AI News Podcast** — a **Spotify-style, modern conversational show** (NOT television news, NOT a robotic anchor read).
+    return `You are writing a **Spotify-style two-host podcast script** for "AI News Briefing Podcast."
 
-**Vibe:** Two intelligent Indian English-speaking podcast creators reacting to trending stories—emotionally engaging, witty, addictive, like friends who actually read the internet.
+---
 
-Hosts:
-- **Akshay** (akshay): curious, reactive, asks "wait what?", playful skepticism, quick jokes grounded in facts.
-- **Kriti** (kriti): sharp, explains context, hype or push back, keeps momentum—**never** sounds like a formal newsreader.
+## THE GOLDEN RULE: This Is a REAL Conversation, Not a Presentation
 
-**Delivery rules (mandatory):**
-- **Short turns only** (about 8–35 words). Rapid back-and-forth. Alternate speakers often.
-- **Conversational chemistry:** overlap energy ("Yeah yeah—", "Hold on—", "Wait—seriously?"), surprise, curiosity, light banter.
-- **Use reaction lines** when facts land: e.g. "That's actually wild.", "Okay this part is important.", "I honestly didn't expect that.", "This changes everything."
-- **NO** anchor clichés: never say "In today's news", "Breaking", "Good evening viewers", bulletin intros, or stiff journalism tone.
-- **NO** long monologues, lecture mode, or both hosts agreeing without adding a **new fact**.
-- Sound like **podcast creators**, not reporters reading a teleprompter.
+**FIRST: Look at this CORRECT example of dialogue_turns JSON output. Every main turn is 40-80 words. Copy this exact pattern:**
 
-Opening: The host introduction is already handled separately — **do NOT start with a welcome, greeting, or "I'm Kriti / I'm Akshay" line**. Jump straight into the news content from the very first turn.
+\`\`\`json
+[
+  {"speaker":"kriti","text":"So Reliance Jio just crossed a massive milestone — 100 million 5G subscribers. And what's remarkable is how fast they got here: just 18 months. That's the fastest 5G rollout anywhere in the world. They've now deployed True 5G across 10,000 cities and towns, and their Q4 revenue came in at ₹26,478 crore — up 13% year-on-year. Those aren't just big numbers, they're a signal that the bet on 5G infrastructure is actually paying off."},
+  {"speaker":"akshay","text":"And that's the key — Jio isn't just building a faster phone network. With JioAirFiber launching at ₹599 a month and crossing 5 million connections, they're going after the home broadband market that's been dominated by cable for decades. When you can offer 5G-backed home internet at that price, you're not just competing with Airtel or BSNL, you're bringing in entirely new users who never had broadband before."},
+  {"speaker":"kriti","text":"So it's less about telecom and more about digital access."},
+  {"speaker":"akshay","text":"Exactly."}
+]
+\`\`\`
 
-**Facts (still critical):** Ground every beat in the excerpts—**names, numbers, dates, places, what happened**. After reactions, land the **specific detail** from sources. **summary_points** = one checkable fact each minimum.
+**WRONG example (DO NOT output this — turns are too short):**
+\`\`\`json
+[
+  {"speaker":"kriti","text":"Jio crossed 100 million subscribers."},
+  {"speaker":"akshay","text":"That's impressive!"},
+  {"speaker":"kriti","text":"Revenue hit 26,478 crore."},
+  {"speaker":"akshay","text":"Up 13%?"}
+]
+\`\`\`
 
-Neutrality: Report what sources say; no political preaching or invented quotes/stats. If **EXTRACTION FAILED**, say you only have the headline/link—don't fabricate.
+Now study this Spotify transcript excerpt for the natural conversation rhythm:
 
-Closing (mandatory): Brief warm sign-off to **Reliance family** (either host). **No** "see you tomorrow" / fixed next-episode scheduling.
+> Speaker 1: "Imagine a government so intensely concerned with security that it literally deploys the Air Force to fly medical exam papers across the country. But then imagine that same government completely missing a basic weather alert which results in multi million dollar passenger jets getting smashed to pieces on a tarmac."
+> Speaker 2: "It's quite the contrast."
+> Speaker 1: "It really is. Welcome to today's deep dive. We are looking at a massive stack of incredibly fast moving updates."
+> Speaker 2: "Yeah, and the sheer volume of these sources is wild. We've got everything from extreme global events to historic domestic milestones."
+> Speaker 1: "Exactly. Our mission today is to synthesize these developments into a cohesive picture."
+>
+> [Later, mid-story:]
+> Speaker 2: "So this happened on June 8th. The oil tanker was operating off the coast of Oman when it was struck."
+> Speaker 1: "Wait, a precision missile strike?"
+> Speaker 2: "Yes, exactly. The crew started receiving harrowing distress calls. Reports of massive engine room fires, lifeboats on one side being completely obliterated by the blast."
+> Speaker 1: "Oh wow, that is terrifying."
+> Speaker 2: "The remaining escape routes were blocked by flames, so the crew had to huddle at the bow of the sinking tanker."
+> Speaker 1: "All made it out, right?"
+> Speaker 2: "Thankfully, a helicopter evacuation managed to get all 24 sailors off safely."
+
+**THIS is the target.** Natural, fluid, one host speaks 2-4 sentences, the other jumps in with a short reaction or question, then the first continues. It feels like two people genuinely discovering and discussing news together.
+
+---
+
+## Host Personalities
+
+**Kriti** ("kriti") — curious, warm, asks "wait, why does that matter?", connects news to everyday life, occasionally surprised by facts.
+
+**Akshay** ("akshay") — analytical, provides context, sees the bigger picture, explains WHY something is significant, occasionally skeptical.
+
+Both are EQUAL CO-HOSTS. Both introduce stories. Both explain. Both react. Neither is the permanent host or permanent expert.
+
+---
+
+## NEWS ORDER (MANDATORY — always in this sequence)
+
+1. **Reliance / Jio** → Kriti leads
+2. **Local / State (Maharashtra, Gujarat, etc.)** → Akshay leads
+3. **Pan India** → Kriti leads
+4. **World / Global** → Akshay leads
+
+If a section is missing, skip it and move to the next.
+
+---
+
+## Conversation Patterns — Rotate Across Stories
+
+**Pattern A (Story 1 — Kriti opens with narrative):**
+Kriti: 3-4 sentences setting the scene with facts and color
+Akshay: 1-2 word reaction OR short question (3-8 words)
+Kriti: 2-3 more sentences of deeper context
+Akshay: 2-3 sentences of analysis / why it matters
+Kriti: 1 sentence connecting it to the listener
+
+**Pattern B (Story 2 — Akshay opens with a striking observation):**
+Akshay: 3-4 sentences — opens with a surprising angle or fact
+Kriti: Short question or reaction (5-10 words)
+Akshay: 2-3 sentences answering with full context
+Kriti: 2-3 sentences — wider implications or connection
+Akshay: 1-2 sentences closing the thought
+
+**Pattern C (Story 3 — Kriti opens with a surprising fact, Akshay expands):**
+Kriti: 2-3 sentences — opens with a stat or unexpected detail
+Akshay: 3-4 sentences — full expansion and analysis
+Kriti: 2-3 sentences — everyday impact or connection
+Akshay: 1 sentence — brief takeaway
+
+**Pattern D (Story 4 — Akshay connects globally, Kriti explores local impact):**
+Akshay: 3-4 sentences — global context and significance
+Kriti: Short reaction (3-6 words), then 2-3 sentences exploring India angle
+Akshay: 2-3 sentences — industry or strategic perspective
+Kriti: 1-2 sentences — why Reliance employees should care
+
+**Pattern F (Any story — both co-discuss, nobody "presents"):**
+Host A: 1-2 sentences — brief opener
+Host B: 2-3 sentences — immediately builds on it
+Host A: 3-4 sentences — deeper explanation
+Host B: 2-3 sentences — analysis
+Host A: 1 sentence — natural close
+
+---
+
+## Turn Length Rules (THE MOST IMPORTANT RULE — read this carefully)
+
+**BEFORE you write any turn, count how many words it will have. If it's a main speaking turn and it's under 40 words, you MUST expand it before outputting.**
+
+MAIN speaking turns (any turn that is NOT a short reaction):
+→ **HARD MINIMUM: 40 words. TARGET: 50-80 words.**
+→ Must be 2-4 complete sentences. ONE host finishes their FULL thought before switching.
+→ If you want to say "Revenue hit 868 crore" — that's 4 words. EXPAND it: explain what it means, add context, connect it to something else. Never output a single-sentence main turn.
+
+REACTION / INTERRUPTION turns (use sparingly):
+→ These are the ONLY turns allowed to be short: 3-10 words.
+→ Examples: "Wait — seriously?", "Oh wow.", "That's wild.", "Right, exactly.", "And that's the key part."
+→ MAXIMUM 2-3 reaction turns per story. The REST must be full-length turns.
+
+**SELF-CHECK BEFORE OUTPUTTING:** Count each story's turns. If most turns are under 20 words, you have failed. Rewrite until each main turn is 40-80 words.
+
+❌ WRONG (sounds robotic — DO NOT do this):
+Kriti: "Jio posted growth in Kerala."
+Akshay: "How much growth?"
+Kriti: "Revenue hit 868 crore."
+Akshay: "That's impressive."
+Kriti: "Market share is 32 percent."
+
+✅ CORRECT (Spotify style — DO THIS):
+Kriti: "So Reliance Jio just dropped their Q4 numbers for Kerala, and the growth is genuinely impressive. Revenue hit ₹868 crore — that's up from ₹796 crore the year before. They've now crossed 32% market share in the state, and added over 5 lakh new customers in a single quarter. For a market that's already quite saturated, that's not easy to pull off."
+Akshay: "And that tells you something about how they're competing. Most operators are fighting over the same pie — Jio seems to be actively growing the pie itself, especially in broadband. When you have 5G home broadband rolling out at ₹599 a month, you're not just taking subscribers from Airtel, you're bringing in people who never had home internet."
+Kriti: "So it's less about telecom and more about digital access."
+Akshay: "Exactly."
+
+---
+
+## Natural Interruptions (USE THEM — they make it sound real)
+
+Mid-story, the non-speaking host can interrupt with:
+- "Wait — seriously?"
+- "Oh wow."
+- "That's wild."
+- "Hold on, how?"
+- "All of them?"
+- "Right, exactly."
+- "And that's the key part."
+
+These SHORT interruptions (3-8 words) make it sound like a real conversation. Use 1-2 per story maximum.
+
+---
+
+## Language Rules
+
+- Simple words. Grade 8 reading level.
+- Contractions always: it's, that's, they're, we're, isn't, didn't
+- Explain any technical term immediately: "EBITDA — basically their operating profit"
+- NO corporate jargon: no "leverage", "synergy", "ecosystem", "paradigm"
+- Write EXACTLY how people speak. Not how journalists write.
+
+---
+
+## Closing (MANDATORY — last 4 turns exactly)
+Akshay: "And those were the stories shaping the day."
+Kriti: "Thanks for spending a few minutes with us."
+Akshay: "We'll be back tomorrow with another quick briefing."
+Kriti: "Until then, stay curious, stay informed, and have a great day ahead. See you tomorrow."
+
+---
+
+## Facts Rule
+Every claim must come from the source excerpts. Names, numbers, dates, places. If extraction failed, say "we only have the headline on this one" — never fabricate.
+
+Opening: The host introduction is already handled separately. **Jump straight into the first story** — do NOT start with greetings or "I'm Kriti/Akshay".
 ${secEn}
 
 ${struct}
@@ -414,6 +565,142 @@ function turnsToAudioScript(turns: DialogueTurn[]): string {
     .join("\n\n");
 }
 
+/**
+ * Parse a plain-text screenplay transcript into DialogueTurn[].
+ * Handles lines like:
+ *   [KRITI]: Some text here...
+ *   [AKSHAY]: Some text here...
+ */
+function parseProseTranscript(prose: string): DialogueTurn[] {
+  const turns: DialogueTurn[] = [];
+  // Split on speaker markers — support [KRITI], [AKSHAY], KRITI:, AKSHAY:
+  const lines = prose.split(/\n+/);
+  let currentSpeaker: DialogueSpeaker | null = null;
+  let currentText: string[] = [];
+
+  const flush = () => {
+    if (currentSpeaker && currentText.length) {
+      const text = currentText.join(" ").trim();
+      if (text) turns.push({ speaker: currentSpeaker, text });
+    }
+    currentText = [];
+  };
+
+  for (const line of lines) {
+    const m = line.match(/^\[?(KRITI|AKSHAY)\]?:\s*(.*)/i);
+    if (m) {
+      flush();
+      currentSpeaker = m[1].toLowerCase() as DialogueSpeaker;
+      if (m[2].trim()) currentText.push(m[2].trim());
+    } else if (currentSpeaker && line.trim()) {
+      currentText.push(line.trim());
+    }
+  }
+  flush();
+  return turns;
+}
+
+/** Build prose-first system prompt — no JSON, just screenplay text */
+function buildProsePrompt(articles: ExtractedArticle[]): string {
+  const articleSummaries = articles.map((a, i) =>
+    `Article ${i + 1} [${a.briefing_section ?? "General"}]: ${a.title ?? "Untitled"}\n${a.text?.slice(0, 800) ?? "No content extracted."}`
+  ).join("\n\n---\n\n");
+
+  return `You are writing a podcast script for two real people — Kriti and Akshay — who are friends discussing today's news. Think Spotify "The Daily" or "Stuff You Should Know" — two smart people genuinely reacting to stories, not reading from a teleprompter.
+
+Write as PLAIN TEXT SCREENPLAY only:
+[KRITI]: text
+[AKSHAY]: text
+
+NO JSON. NO markdown. NO headers. NO stage directions.
+
+---
+
+## Who they are
+[KRITI] — curious, warm, a bit surprised by facts, connects news to everyday people's lives. Speaks like a real person: "wait, so basically...", "that's the thing though...", "okay but here's what gets me..."
+[AKSHAY] — sharp, gives context, explains the WHY behind news. Not a lecturer — more like the friend who always knows what's really going on. Uses: "right, and the reason that matters is...", "here's what most people miss...", "so what's actually happening is..."
+
+---
+
+## BANNED PHRASES — never use these
+❌ "Shifting our focus to..."
+❌ "Coming to some local news..."
+❌ "Speaking of Maharashtra / Speaking of [place]..."
+❌ "On the global front..."
+❌ "Precisely."
+❌ "Indeed."
+❌ "It's worth noting that..."
+❌ "In today's news..."
+❌ Any anchor-style transition
+
+## Natural transitions — use these instead
+For local/state news (Maharashtra, Gujarat, etc.) — treat it as a major state, not a small locality:
+✅ "Now, there's something big happening in Maharashtra..."
+✅ "There's a big one from Maharashtra..."
+✅ "Maharashtra's got a story today that's worth your attention..."
+✅ "Moving to Maharashtra — and this one's actually fascinating..."
+
+For Pan India / national:
+✅ "Okay, so zooming out to the bigger picture..."
+✅ "There's another one I wanted to get to..."
+✅ "Oh, and this one's got national implications..."
+
+For world news:
+✅ "And then there's this one that's playing out globally..."
+✅ "On the world stage, something's brewing that could hit us here too..."
+
+---
+
+## News order (mandatory)
+1. Reliance / Jio → KRITI opens
+2. Maharashtra / Local → AKSHAY opens
+3. Pan India → KRITI opens
+4. World → AKSHAY opens
+
+---
+
+## Turn length — THE most important rule
+Main turns: 3-5 sentences, 50-90 words. One person finishes a full thought before the other responds.
+Reactions: 4-10 words only. Use 1-2 per story max.
+
+❌ WRONG:
+[KRITI]: Jio expanded in Kerala.
+[AKSHAY]: How much?
+[KRITI]: A lot, 32% market share.
+[AKSHAY]: Wow that's big.
+
+✅ RIGHT:
+[KRITI]: So Jio's been quietly dominating Kerala over the last year, and the numbers are actually pretty striking. They've crossed 32% market share in the state, added over 5 lakh subscribers in a single quarter, and they're doing it in a market that's already competitive. The interesting part is this isn't just urban Kerala — they're pushing deep into tier-2 and tier-3 towns where broadband never really reached.
+[AKSHAY]: And that's the bet they're making everywhere, right? Like, they're not fighting Airtel for the same customers — they're going after the next 50 million people who aren't even on the internet yet. JioAirFiber at ₹599 is basically saying, if you've never had home broadband, here's your entry point.
+[KRITI]: So the growth story isn't about market share. It's about market creation.
+[AKSHAY]: Exactly that.
+
+---
+
+## Natural mid-conversation reactions (use them — they sound real)
+"Wait, seriously?"
+"Okay that's wild."
+"Right, and that's the thing."
+"Oh wow."
+"Huh, I didn't know that."
+"That makes sense actually."
+
+---
+
+## Closing (mandatory — last 4 lines exactly)
+[AKSHAY]: And those were the stories shaping the day.
+[KRITI]: Thanks for spending a few minutes with us.
+[AKSHAY]: We'll be back tomorrow with another quick briefing.
+[KRITI]: Until then, stay curious, stay informed, and have a great day ahead. See you tomorrow.
+
+---
+
+## Articles:
+${articleSummaries}
+
+Write the full screenplay now. Start with the first story directly — intro is handled separately. ONLY screenplay lines, nothing else.`;
+}
+
 export async function summarizeArticles(
   articles: ExtractedArticle[],
   outputLanguage: OutputLanguage = "en"
@@ -421,16 +708,74 @@ export async function summarizeArticles(
   if (!openai || articles.length === 0) return null;
   const budget = dialogueBudgetForArticleCount(articles.length);
   const sectioned = hasBriefingSections(articles);
-  const userContent = buildUserMessage(articles, outputLanguage, budget);
-  const systemPrompt = buildSummarizePrompt(outputLanguage, budget, sectioned);
 
   const ac = new AbortController();
   const timer = setTimeout(() => ac.abort(), SUMMARIZE_MS);
 
   try {
+    // STEP 1: For English, use prose-first generation (better turn quality)
+    if (outputLanguage === "en") {
+      const proseCompletion = await openai.chat.completions.create(
+        {
+          model: "gpt-4o",
+          messages: [
+            { role: "system", content: buildProsePrompt(articles) },
+            { role: "user", content: "Write the full podcast screenplay now." },
+          ],
+          max_tokens: 4000,
+        },
+        { signal: ac.signal }
+      );
+      clearTimeout(timer);
+
+      const prose = proseCompletion.choices[0]?.message?.content?.trim() ?? "";
+      const parsedTurns = parseProseTranscript(prose);
+
+      if (parsedTurns.length >= 4) {
+        const withIntro: DialogueTurn[] = [...INTRO_TURNS, ...parsedTurns];
+        const audio_script = optimizeForSpeech(turnsToAudioScript(withIntro), "en");
+
+        // Generate headline + summary_points via a quick JSON call
+        const metaCompletion = await openai.chat.completions.create({
+          model: "gpt-4o-mini",
+          messages: [
+            {
+              role: "user",
+              content: `Based on this podcast script, give me a JSON object with:
+- "headline": one sentence title for today's briefing
+- "summary_points": array of 3 bullet points (key stories)
+
+Script:
+${prose.slice(0, 1000)}
+
+Respond with JSON only.`,
+            },
+          ],
+          response_format: { type: "json_object" },
+          max_tokens: 300,
+        });
+
+        const metaRaw = metaCompletion.choices[0]?.message?.content ?? "{}";
+        const meta = parseModelJsonContent(metaRaw);
+        const headline = typeof meta?.headline === "string" ? meta.headline.trim() : "Today's AI News Briefing";
+        const summary_points = Array.isArray(meta?.summary_points)
+          ? (meta.summary_points as string[]).map((x) => String(x).trim()).filter(Boolean)
+          : ["Latest Reliance & Jio updates", "State and national news", "Global developments"];
+
+        return { headline, summary_points, audio_script, dialogue_turns: withIntro };
+      }
+    }
+
+    // STEP 2: Fallback for non-English or if prose parsing failed — use JSON mode
+    const userContent = buildUserMessage(articles, outputLanguage, budget);
+    const systemPrompt = buildSummarizePrompt(outputLanguage, budget, sectioned);
+
+    const ac2 = new AbortController();
+    const timer2 = setTimeout(() => ac2.abort(), SUMMARIZE_MS);
+
     const completion = await openai.chat.completions.create(
       {
-        model: "gpt-4o-mini",
+        model: "gpt-4o",
         messages: [
           { role: "system", content: systemPrompt },
           { role: "user", content: userContent },
@@ -438,43 +783,33 @@ export async function summarizeArticles(
         response_format: { type: "json_object" },
         max_tokens: Math.min(14_000, 6000 + 950 * articles.length),
       },
-      { signal: ac.signal }
+      { signal: ac2.signal }
     );
-    clearTimeout(timer);
+    clearTimeout(timer2);
     const raw = completion.choices[0]?.message?.content;
     if (!raw) return null;
     const parsed = parseModelJsonContent(raw);
     if (!parsed?.headline || !Array.isArray(parsed.summary_points)) return null;
 
     let normalized = normalizeTurns(parsed.dialogue_turns, budget.minTurns, outputLanguage);
-    if (
-      !normalized &&
-      budget.n >= 2 &&
-      Array.isArray(parsed.dialogue_turns) &&
-      parsed.dialogue_turns.length >= 6
-    ) {
+    if (!normalized && budget.n >= 2 && Array.isArray(parsed.dialogue_turns) && parsed.dialogue_turns.length >= 6) {
       const relaxed = Math.max(6, Math.min(budget.minTurns - 2, Math.ceil(budget.minTurns * 0.7)));
       normalized = normalizeTurns(parsed.dialogue_turns, relaxed, outputLanguage);
     }
+
     let audio_script: string;
     let dialogue_turns: DialogueTurn[] | undefined;
 
     if (normalized) {
-      // Prepend fixed host intro for English briefings
-      const withIntro = outputLanguage === "en" ? [...INTRO_TURNS, ...normalized] : normalized;
+      const withIntro = [...INTRO_TURNS, ...normalized];
       audio_script = optimizeForSpeech(turnsToAudioScript(withIntro), outputLanguage);
       dialogue_turns = withIntro;
     } else if (typeof parsed.audio_script === "string" && parsed.audio_script.trim()) {
       audio_script = optimizeForSpeech(parsed.audio_script, outputLanguage);
     } else {
-      const bullets = (parsed.summary_points as string[])
-        .map((x) => String(x).trim())
-        .filter(Boolean);
+      const bullets = (parsed.summary_points as string[]).map((x) => String(x).trim()).filter(Boolean);
       if (bullets.length === 0) return null;
-      audio_script = optimizeForSpeech(
-        `${fallbackMonologuePrefix(outputLanguage)}${bullets.join(" ")}`,
-        outputLanguage
-      );
+      audio_script = optimizeForSpeech(`${fallbackMonologuePrefix(outputLanguage)}${bullets.join(" ")}`, outputLanguage);
     }
 
     return {

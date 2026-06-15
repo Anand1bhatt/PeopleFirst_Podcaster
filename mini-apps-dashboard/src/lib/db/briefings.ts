@@ -268,7 +268,7 @@ export async function findFigmaDigestBriefingForReuse(
 
 export async function createBriefing(
   sources: Omit<Source, "id">[],
-  ttsProvider: TtsProvider = "elevenlabs",
+  ttsProvider: TtsProvider = "sarvam",
   outputLanguage: OutputLanguage = "en",
   options?: CreateBriefingOptions
 ): Promise<string | null> {
@@ -444,14 +444,13 @@ export async function getBriefing(id: string): Promise<BriefingWithSources | nul
     }
     return rowToBriefing(row as BriefingRow, (sourceRows ?? []) as BriefingSourceRow[]);
   }
-  let entry = memoryStore.get(id);
-  if (!entry) {
-    const fromDisk = await devBriefingRead(id);
-    if (fromDisk) {
-      memoryStore.set(id, fromDisk);
-      entry = fromDisk;
-    }
+  // Always read from disk — memoryStore is per-process and stale across Next.js workers
+  const fromDisk = await devBriefingRead(id);
+  if (fromDisk) {
+    memoryStore.set(id, fromDisk);
+    return rowToBriefing(fromDisk.row, fromDisk.sourceRows);
   }
+  const entry = memoryStore.get(id);
   if (!entry) return null;
   return rowToBriefing(entry.row, entry.sourceRows);
 }

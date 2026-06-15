@@ -27,7 +27,7 @@ export type SummaryOutput = {
   dialogue_turns?: DialogueTurn[];
 };
 
-export type BriefingStatus = "pending" | "extracting" | "summarizing" | "generating_audio" | "completed" | "failed";
+export type BriefingStatus = "pending" | "extracting" | "summarizing" | "awaiting_approval" | "generating_audio" | "completed" | "failed";
 
 /** Shown in the loading UI while the pipeline runs */
 export type PipelineProgress = {

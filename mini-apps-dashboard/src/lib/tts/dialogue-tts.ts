@@ -39,7 +39,14 @@ function prepConversationalLine(text: string): string {
   }
   return normalized
     .replace(/\s*—\s*/g, ", ")
-    .replace(/\s+-\s+/g, ", ");
+    .replace(/\s+-\s+/g, ", ")
+    // Fix Sarvam pronunciation: "tier-2" / "tier-3" → "tier two" / "tier three" (words, not digits)
+    .replace(/\btier[-\s]1\b/gi, "tier one")
+    .replace(/\btier[-\s]2\b/gi, "tier two")
+    .replace(/\btier[-\s]3\b/gi, "tier three")
+    .replace(/\btier[-\s]4\b/gi, "tier four")
+    // Add slight pause between sentences to prevent Sarvam filler-word fumbles
+    .replace(/([.!?])\s+([A-Z])/g, "$1.. $2");
 }
 
 async function elevenVoiceIdFor(speaker: DialogueSpeaker): Promise<string> {
@@ -161,9 +168,11 @@ export async function synthesizeDialogueAudio(
     log.push("Sarvam TTS skipped (no SARVAM_API_KEY). Falling back to OpenAI.");
   }
 
+  // Sarvam has strict rate limits — run sequentially (concurrency=1) to avoid failures
+  const defaultConcurrency = preferred === "sarvam" ? 1 : 4;
   const dialogueConcurrency = Math.min(
     6,
-    Math.max(1, Number(process.env.DIALOGUE_TTS_CONCURRENCY ?? "4") || 4)
+    Math.max(1, Number(process.env.DIALOGUE_TTS_CONCURRENCY ?? String(defaultConcurrency)) || defaultConcurrency)
   );
 
   const [turnAudios, gapBuffers] = await Promise.all([
